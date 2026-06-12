@@ -651,15 +651,66 @@ function switchTab(name) {
 }
 
 // ══════════════════════════════════════
-//  File Import
+//  File Import — 自动检测 UTF-8 / GBK 编码
 // ══════════════════════════════════════
+
+// 检测字节数组是否为合法 UTF-8
+function isValidUTF8(bytes) {
+  let i = 0;
+  while (i < bytes.length) {
+    const b = bytes[i];
+    let extraBytes = 0;
+    if (b === 0xEF && bytes[i+1] === 0xBB && bytes[i+2] === 0xBF) { i += 3; continue; } // BOM
+    if (b <= 0x7F) { i++; continue; }
+    else if (b >= 0xC2 && b <= 0xDF) extraBytes = 1;
+    else if (b >= 0xE0 && b <= 0xEF) extraBytes = 2;
+    else if (b >= 0xF0 && b <= 0xF4) extraBytes = 3;
+    else return false; // 非法起始字节
+    for (let j = 1; j <= extraBytes; j++) {
+      if (i + j >= bytes.length || (bytes[i + j] & 0xC0) !== 0x80) return false;
+    }
+    i += 1 + extraBytes;
+  }
+  return true;
+}
+
+function readFileWithEncoding(file) {
+  return new Promise(resolve => {
+    // 第一步：以 ArrayBuffer 读取原始字节
+    const binReader = new FileReader();
+    binReader.onload = ev => {
+      const buf = ev.target.result;
+      const bytes = new Uint8Array(buf);
+
+      // 判断编码
+      const useUTF8 = isValidUTF8(bytes);
+      const encoding = useUTF8 ? 'UTF-8' : 'GBK';
+
+      // 第二步：用正确编码重新读取
+      const textReader = new FileReader();
+      textReader.onload = ev2 => resolve(ev2.target.result);
+      textReader.onerror = () => {
+        // 最终兜底
+        const fallback = new FileReader();
+        fallback.onload = ev3 => resolve(ev3.target.result);
+        fallback.readAsText(file, 'UTF-8');
+      };
+      textReader.readAsText(file, encoding);
+    };
+    binReader.onerror = () => {
+      const fallback = new FileReader();
+      fallback.onload = ev => resolve(ev.target.result);
+      fallback.readAsText(file, 'UTF-8');
+    };
+    binReader.readAsArrayBuffer(file);
+  });
+}
+
 function handleFileImport(e) {
   const files = Array.from(e.target.files);
   let loaded = 0;
   files.forEach(f => {
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const text = ev.target.result;
+    readFileWithEncoding(f).then(text => {
       library[f.name] = { text, chars: text.length, addedAt: Date.now() };
       loaded++;
       if (loaded === files.length) {
@@ -668,18 +719,7 @@ function handleFileImport(e) {
         showToast('已导入 ' + loaded + ' 个文件 ✓');
         switchTab('lib');
       }
-    };
-    reader.onerror = () => {
-      // Try GBK fallback
-      const r2 = new FileReader();
-      r2.onload = ev2 => {
-        library[f.name] = { text: ev2.target.result, chars: ev2.target.result.length, addedAt: Date.now() };
-        loaded++;
-        if (loaded === files.length) { saveLibrary(); renderLibrary(); }
-      };
-      r2.readAsText(f, 'GBK');
-    };
-    reader.readAsText(f, 'UTF-8');
+    });
   });
   e.target.value = '';
 }
